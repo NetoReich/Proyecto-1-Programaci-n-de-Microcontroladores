@@ -1,0 +1,506 @@
+; Archivo: PROYECTO
+; Dispositivo: PIC16F887
+; Autor: Johann Haeussler 21223
+;
+; Compilador: pic-a (v2.30), MPLABX V5.40
+; Programa: PROYECTO_1 
+; Hardware: Push, LEDs, Displays
+;
+; Creado: 15 de Marzo, 2023
+; Última modificación: 19 de Marzo 2023
+PROCESSOR 16F887
+#include <xc.inc>
+    
+  CONFIG FOSC=INTRC_NOCLKOUT	//oscilador interno
+  CONFIG WDTE=OFF   // WDT disabled (reinicio repetitivo de pic)
+  CONFIG PWRTE=OFF   // PWRT enabled (espera de 72ms al iniciar)
+  CONFIG MCLRE=OFF  // El pin de MCLR se utiliza como I/O
+  CONFIG CP=OFF    //Sin protección de código
+  CONFIG CPD=OFF   //Sin protección de datos
+  
+  CONFIG BOREN=OFF  // Sin reinicio cuando el voltaje de alimentación baja de 4V
+  CONFIG IESO=OFF   //Reinicio sin cambio de reloj de interno a externo
+  CONFIG FCMEN=OFF  //Cambio de reloj externo a interno en caso de fallo
+  CONFIG LVP=OFF	    //programación en bajo voltaje permitida
+  
+; configuration word 2
+   CONFIG WRT=OFF  //Protección de autoescritura por el programa desactivada
+   CONFIG BOR4V=BOR40V	//Reinicio abajo de 4V, (BOR21V-2.1V)
+   
+UP    EQU 1  ; constante
+DOWN  EQU 0  ; constante
+
+
+	
+PSECT udata_bank0	;variables
+  cont:         DS  2  
+  modo:		DS  1
+  diente:	DS  1
+  triangular:	DS  1
+  cont_freq:	DS  1
+  selec:	DS  1   
+    
+;--------------variables---------------
+PSECT udata_shr		;variables para la interrupción
+  W_TEMP:	DS 1	    
+  STATUS_TEMP:  DS 1
+
+PSECT resVect, class=CODE, abs, delta=2
+;-------------------------------------------------------------------------------
+;				  VECTOR RESET
+;-------------------------------------------------------------------------------
+ORG 00h     ;posicion 0000h para el reset
+resetVec:
+    PAGESEL main
+    goto main
+PSECT intVect, class=CODE, abs, delta=2
+
+;-----------vector interrupt--------------
+ORG 04h			;posicion 0004h para las interrupciones
+    
+push:			    ; pc a stack
+    movwf   W_TEMP	    ; Se mueve w a variable wtemp
+    swapf   STATUS, W	    ; Intercambiar de los nibbles y se almacena en w
+    movwf   STATUS_TEMP	    ; Se mueve a w a la variable statustemp
+
+isr:
+    btfsc   RBIF	    ; Se revisa si la bandera que registra un cambio esta apagada, si=1 no=0
+    call    int_iocrb	    ; Llamar subrutina de interrupcion
+    btfsc   T0IF	    ; Si la bandera de cambio de TMR0 no está encendida se salta una linea
+    call    T0_int	    ; Se llama a la rutina de interrupcion del TMR0
+    
+pop:			    ; La interrupción se mueve al stack del pc
+    swapf   STATUS_TEMP, W  ; Intercambio de nibbles de la variable statustemp y se almacena en w
+    movwf   STATUS	    ; Se mueve w a status
+    swapf   W_TEMP, F	    ; Intercambio de nibbles de la variable wtemp y se almacena en wtemp
+    swapf   W_TEMP, W	    ; Intercambio de nibbles de la variable wtemp y se almacena en w
+    retfie
+;-------------------------------------------------------------------------------
+;				INT SUBRUTINAS
+;-------------------------------------------------------------------------------
+
+    
+T0_int:
+    call    reinicio_tmr0           ; Se llama al reincio del TMR0
+    incf    cont		    ; Se incrementa variable cont
+    return
+
+int_iocrb:
+    banksel PORTA	
+
+    btfss   PORTB, 0	    ; Revisar si el pin 1 esta encendido
+    incf    modo	    ; Se incrementa la varibale modo
+    movlw   0b00000011	    ; Se selecciona bits para la cantidad de modos que habra  en la onda
+    andwf   modo, F	    ; Se asegura que se lean los bits encendidos         
+    bcf	    RBIF	    ; Se pone en 0 la bandera que registra cambio en B'
+    
+    ; Push para incrementar y decrementar frecuencia
+
+    btfss   PORTB, 1	    ; Verifica si el bit 1 del Registro PortB esta limpio
+    incf    cont_freq	    ; Incrementa el valor del registro cont_freq 
+    btfss   PORTB, 2	    ; Verifica si el bit 2 del Registro PortB esta limpio
+    decf    cont_freq	    ; Decrementa el valor del registro cont_freq
+    
+    ; Push para cambiar a Hz
+    btfss   PORTB,3	    ; Verifica si el bit 3 del Registro PortB esta limpio
+    goto    hertz	    ; Hace un salto a la subrutina Hertz
+    
+   ; Push para cambiar a Khz
+
+    
+    btfss   PORTB,4	     ; Verifica si el bit 3 del Registro PortB esta limpio
+    goto    khertz	     ; Hace un salto a la subrutina Hertz
+    
+  
+    return
+
+;-------------------------------------------------------------------------------
+;				    MAIN CONFIGURACIÓN
+;-------------------------------------------------------------------------------
+PSECT mainVect, class=CODE, abs, delta=2
+;-----------vector interrupt--------------
+ORG 0200h     ;posicion 0004h para las interrupciones	
+main: 
+    call    io_config		; Se llama a la configuración de entadas y salidas
+    call    config_reloj	; Se llama al reloj 
+    call    config_ioc		; Se llama a la configuracón de bandera de cambio del Puerto B
+    call    timer0		; Se llama al Timer0
+    call    int_enable		; Se llama a la configuración de banderas
+    
+  
+;-------------------------------------------------------------------------------
+;				    LOOOP
+;-------------------------------------------------------------------------------
+
+loop:
+    movf    cont, W	; Mueve el contenido de la variable cont al registro W
+    sublw   62		; Cambiar frecuencia, Resta 62 al valor del registroW
+    btfss   ZERO	; Salta a la siguiente linea si el bit 0 en el registro de estado es 0 
+    goto    loop	; Loop infinito
+    ;generamos el diente de sierra interno
+    incf    diente, 1	; Incrementa de la variable diente en 1 la cual se utiliza para la onda diente de sierra
+    clrf    cont	; Limpia el valor de la variable cont para reiniciar el contador
+    call    ELEGIR_MODO ; Llama a la función elegir_modo
+ 
+     
+    goto    loop	; Loop infinito
+    
+ELEGIR_MODO:    
+    movf    modo, W	; Se carga el valor de la variable modo en el registro W
+    movwf   PORTD	; Se mueve la instrucción al registro PORTD
+    movlw   2		; Se cambia de página 
+    movwf   PCLATH	; Se carga el valor en el registro PCLATH
+    movf    modo, W	; Se carga el valor de la variable modo en el registro W
+    addwf   PCL		; Se realiza una suma de modo y el contador del programa actual
+			; Es decir,que el programa saltará a una dirección de memoria 
+			; que depende del valor actual de modo.
+    goto    DIENTE	; Dependiendo del modo selccionado el programa saltara a Dieente
+    goto    CUADRADA	; Salta a onda cuadrada
+    goto    TRIANGULAR	; Salta a onda triangular 
+    goto    SENOIDAL	; Salta a onda Senoidal
+    
+DIENTE:
+    movf    diente, W	; Se guarda la variable diente y lo guarda en el registro W
+    call    TABLAD	; Se llama a la tabla de mapeo de la onda diente de sierra.
+    movwf   PORTC	; Si el bit de acarreo no está establecido, mueve el valor de W al puerto C
+    return
+    
+ 
+TABLAD:
+    clrf    PCLATH
+    bsf	    PCLATH, 1         ; 
+    andlw   0x1f
+    addwf   PCL		    ; El valor del PC se suma con lo que haya en w para
+    retlw	0
+    retlw	16
+    retlw	16
+    retlw	32
+    retlw	32
+    retlw	48
+    retlw	48
+    retlw	64
+    retlw	64
+    retlw	80
+    retlw	80
+    retlw	96
+    retlw	96
+    retlw	112
+    retlw	112
+    retlw	128
+    retlw	128
+    retlw	143
+    retlw	143
+    retlw	159
+    retlw	159
+    retlw	175
+    retlw	175
+    retlw	191
+    retlw	191
+    retlw	207
+    retlw	207
+    retlw	223
+    retlw	223
+    retlw	239
+    retlw	239
+    retlw	255
+    retlw	255
+    
+
+CUADRADA:
+    movf    diente, W	;  Se guarda la variable diente y lo guarda en el registro W
+    call    TABLAC	; Se llama a la tabla de mapeo de la onda cuadrada. 
+    movwf   PORTC	; si el bit de acarreo no está establecido, mueve el valor de W al puerto C
+    return
+
+TABLAC:
+    clrf    PCLATH
+    bsf	    PCLATH, 1         ; 
+    andlw   0x1f
+    addwf   PCL		    ; El valor del PC se suma con lo que haya en w para
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	0
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+    retlw 	255
+
+    
+TRIANGULAR:
+    movf diente, W	; Se guarda la variable diente y lo guarda en el registro W
+    call    TABLAT	; Se llama a la tabla de mapeo de la onda Triangular.
+    movwf   PORTC	; Si el bit de acarreo no está establecido, mueve el valor de W al puerto C
+    return
+
+TABLAT:
+    clrf    PCLATH
+    bsf	    PCLATH, 1         
+    andlw   0x1f
+    addwf   PCL		    ; El valor del PC se suma con lo que haya en w para
+    retlw	0
+    retlw	16
+    retlw	32
+    retlw	48
+    retlw	64
+    retlw	80
+    retlw	96
+    retlw	112
+    retlw	128
+    retlw	143
+    retlw	159
+    retlw	175
+    retlw	191
+    retlw	207
+    retlw	223
+    retlw	239
+    retlw	255
+    retlw	239
+    retlw	223
+    retlw	207
+    retlw	191
+    retlw	175
+    retlw	159
+    retlw	143
+    retlw	128
+    retlw	112
+    retlw	96
+    retlw	80
+    retlw	64
+    retlw	48
+    retlw	32
+    retlw	16
+    retlw	0
+
+
+
+SENOIDAL:
+    movf diente, W	; Se guarda la variable diente y lo guarda en el registro W
+    call    TABLAS	; Se llama a la tabla de mapeo de la onda senoidal.
+    movwf   PORTC	; si el bit de acarreo no está establecido, mueve el valor de W al puerto C
+    return
+
+TABLAS:
+    CLRF PCLATH
+    BSF	 PCLATH, 1         ; 0100h
+    andlw 0x1f
+    ADDWF   PCL		    ; El valor del PC se suma con w	    
+    retlw   0	    
+    retlw   2	    
+    retlw   10	    
+    retlw   21    
+    retlw   37	    
+    retlw   57	    
+    retlw   79	    
+    retlw   103
+    retlw   128	        
+    retlw   152	    
+    retlw   176	    	    
+    retlw   198	    
+    retlw   218	    
+    retlw   234	    
+    retlw   245	    
+    retlw   253	    
+    retlw   255	    
+    retlw   253	    
+    retlw   245	    
+    retlw   234    
+    retlw   218	    
+    retlw   198	    
+    retlw   176	    
+    retlw   152
+    retlw   128	        
+    retlw   103	    
+    retlw   79	    	    
+    retlw   57	    
+    retlw   37	    
+    retlw   21	    
+    retlw   10	    
+    retlw   2
+    retlw   0
+
+    return
+
+
+ ;-------------------------------------------------------------------------------
+ ;				    SUBRUTINAS
+ ;-------------------------------------------------------------------------------
+
+hertz:
+    bsf	    selec,0 ; Pone en 1 el primer bit del registro "selec"
+    bcf	    selec,1 ; Pone en 0 el segundo bit del registro "selec"
+    bcf	    PORTE,1 ; Pone en 0 el segundo bit del registro "PORTE" 
+    bsf	    PORTE,0 ; Pone en 1 el primer bit del registro "PORTE"
+		    ; Enciende Led
+    return	    ; regresa a la instrucción siguiente a la que llamó a esta subrutina
+
+
+khertz:
+    bcf	    selec,0 ; Pone en 0 el primer bit del registro "selec"
+    bsf	    selec,1 ; Pone en 1 el segundo bit del registro "selec"
+    bcf	    PORTE,0 ; Pone en 0 el primer bit del registro "PORTE"
+    bsf	    PORTE,1 ; Pone en 1 el segundo bit del registro "PORTE"
+		    ; Enciende Led
+    return	    ; Regresa a la instrucción siguiente a la que llamó a esta subrutina
+
+
+io_config:
+
+    banksel ANSEL		; Seleccionamos el banco ANSEL
+    clrf    ANSEL		; Limpiamos ANSEL para configurar los pines como digitales
+    clrf    ANSELH
+    
+    BANKSEL TRISA		; Seleccionamos el banco TRISA, banco 1
+    clrf    TRISA		; Configuramos todos los pines de A como salidas
+    MOVLW   11111111B		; Configuramos los pines 3:1 como salida en PORTA
+    MOVWF   TRISD		; Activamos los pines como salidas en el puerto A
+    CLRF    TRISC		; Configuramos todos los pines del puerto C como salidas
+    CLRF    TRISD		; Activamos todos los pines del puerto D como salidas
+    CLRF    TRISE
+   
+    
+    BCF	    OPTION_REG,7	; Limpiamos RBPU para que el pull-up se desbloquee en el puerto B
+    BSF	    WPUB, 0		; Activamos el weak-pull up en el pin 0 de PORTB
+    BSF	    WPUB,1		; Activamos el weak-pull up en el pin 1 de PORTB
+    BSF	    WPUB,2		; Activamos el weak-pull up en el pin 2 de PORTB
+    BSF	    WPUB,3		; Activamos el weak-pull up en el pin 3 de PORTB
+    BSF	    WPUB,4		; Activamos el weak-pull up en el pin 4 de PORTB
+
+    
+    clrf    TRISC
+    bcf	    TRISC, 0	; Configuramos los primeros cuatro bits de TRISC como outputs
+    bcf	    TRISC, 1
+    bcf	    TRISC, 2
+    bcf	    TRISC, 3
+    
+    clrf    TRISE
+    bcf	    TRISE, 5	; Configuramos los primeros cuatro bits de TRISE como outputs
+    bcf	    TRISC, 6
+    bcf	    TRISC, 7
+    
+    
+    bcf	    OPTION_REG, 7	; Limpiamos RBPU
+    
+    banksel PORTA	; Limpiamos todos los puertos
+    clrf    PORTA
+    clrf    PORTB
+    clrf    PORTC
+    clrf    PORTD
+    clrf    PORTE
+    clrf    selec
+    clrf    cont
+
+    
+config_ioc:
+   BANKSEL TRISA		; Se selecciona el banco
+    bsf	    IOCB,0		; Se habilita la interrupción de cambio en el pin 0 del puerto B
+    bsf	    IOCB,1		; Se habilita la interrupción de cambio en el pin 1 del puerto B
+    bsf	    IOCB,2		; Se habilita la interrupción de cambio en el pin 2 del puerto B
+    bsf	    IOCB,3		; Se habilita la interrupción de cambio en el pin 3 del puerto B
+    bsf	    IOCB,4		;; Se habilita la interrupción de cambio en el pin 4 del puerto B
+
+
+    BANKSEL PORTA		; Se selecciona el banco
+    movf    PORTB,W		; Al leer termina condición de mismatch
+    bcf	    RBIF		; Se limpia la bandera que registra el cambio en uno de los puertos
+    return
+ 
+config_reloj:
+    banksel OSCCON		;configuración del registro OSCCON para el oscilador
+    bsf IRCF2
+    bsf IRCF1
+    bsf IRCF0			; Oscilador a 8MHz 
+    bsf SCS			; reloj interno
+    return
+
+timer0:
+    banksel OPTION_REG
+    bcf T0CS			;reloj timer 0
+    bcf PSA			; asignación de prescaler al tmr0
+    
+    bcf PS2
+    bcf PS1
+    bsf PS0			; razón de prescaler a 1:2
+    
+    banksel PORTA
+    call reinicio_tmr0
+    return
+
+    
+reinicio_tmr0:
+   bcf	   T0IF			; Vuelve 0 al bit de overflow
+   movf    cont_freq, W		; Mueve el valor de la variable "cont_freq" al registro "W"
+   btfsc   selec,1		; Salta la siguiente instrucción si el bit 1 del registro "selec" está limpio
+   call    valores_hz		; Llama a la tabla "valores_hz" para variar n
+   btfsc   selec,1		; Salta la siguiente instrucción si el bit 1 del registro "selec" está limpio
+   call    valores_khz		; Llama a la tabla "valores_khz" para variar n
+   movwf   TMR0			; Mueve el valor del registro "W" al temporizador TMR0
+   return			; Retorna de la función
+org 100h ; posición de la tabla
+valores_hz:
+    CLRF    PCLATH
+    BSF	    PCLATH, 0        ; 0100h
+
+    andlw   0x0F
+    ADDWF   PCL		    ; El valor del PC se suma con w	    
+    retlw   10		    ; 1 Hz
+    retlw   135		    ; 2 Hz
+    retlw   177		    ; 3 Hz
+    retlw   199		    ; 4 Hz 
+    retlw   212		    ; 5	Hz 
+    retlw   220		    ; 6 Hz
+    retlw   226		    ; 7 Hz
+    retlw   230		    ; 8 Hz
+    retlw   234		    ; 9 Hz
+    retlw   237		    ; 10 Hz
+
+org 100h ; posición de la tabla
+  valores_khz:
+    CLRF    PCLATH
+    BSF	    PCLATH, 0        ; 0100h
+
+    andlw   0x0F
+    ADDWF   PCL	   
+   
+    retlw   240
+    retlw   243
+    retlw   247
+    retlw   248
+    retlw   249
+    retlw   250  
+
+int_enable:
+    bsf	RBIE        ; Habilitar la interrupción del puerto B
+    bcf	RBIF        ; Limpiar la bandera de interrupción del puerto B
+    bsf T0IE        ; Habilitar la interrupción del temporizador 0
+    
+    bcf T0IF        ; Limpiar la bandera de interrupción del temporizador 0
+    bsf	GIE         ; Intcon, Habilitar todas las interrupciones a nivel global
+    return          ; Regresar de la subrutina
+
+ ;------------------------------------------------
+END
